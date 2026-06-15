@@ -1,8 +1,11 @@
 import os
 import cv2
 import numpy as np
+import pandas as pd
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
+from skimage.feature import graycomatrix, graycoprops
+
 
 if __package__ is None or __package__ == "":
     import sys
@@ -30,50 +33,134 @@ def load_images_local(directory: Path) -> List[np.ndarray]:
         raise RuntimeError(f"Failed to load images from the local directory {directory}. Reason: {e}")
 
 
-# Search for outliers -> Distribution of Mean Pixel Values
 
-# Average mean pixel value AND Std deviation of mean pixel values
 def mean_pixels(image: np.ndarray) -> float:
     try:
+        # TODO: Compute mean over non-zero parts only (maybe after otsu thresholding)
         mean = np.mean(image.flatten()).__float__()
-
         return mean
     except Exception as e:
         raise RuntimeError(f"An error has occured while computing the mean pixel value. Reason: {e}")
 
 
-def avg_mean_images(list_imgs: List[np.ndarray]) -> float:
+def avg_mean_images(list_imgs: List[np.ndarray]) -> np.ndarray:
     try:
         means = []
-        for i, img in enumerate(list_imgs):
+        for img in list_imgs:
             mean = mean_pixels(img)
-            means.insert(i, mean)
+            means.append(mean)
 
         means_np = np.array(means)
-        return np.mean(means_np).__float__()
+        return means_np
+    except Exception as e:
+        raise RuntimeError(f"Failed to compute means across all images. Reason: {e}")
+
+
+def avg_mean_std_images(list_imgs: List[np.ndarray]) -> Tuple[float, float]:
+    try:
+        means_np = avg_mean_images(list_imgs)
+        return np.mean(means_np).__float__(), np.std(means_np).__float__()
     except Exception as e:
         raise RuntimeError(f"Failed to get the average of means. Reason: {e}")
 
-# Thresholds for outliers (e.g., >3 std away from mean)
 
-# low_thresh = mean_of_means - 3*std_of_means
-# high_thresh = mean_of_means + 3*std_of_means
-# outlier_low = np.where(all_means < low_thresh)[0]
-# outlier_high = np.where(all_means > high_thresh)[0]
+def outlier_threshold(avg_mean: float, std: float) -> Tuple[float, float]:
+    try:
+        low_thresh = avg_mean - (3 * std)
+        high_thresh = avg_mean + (3 * std)
+
+        return low_thresh, high_thresh
+    except Exception as e:
+        raise RuntimeError(f"Failed to get outlier low and high thresholds. Reason: {e}")
 
 
+def grayscale_images(list_imgs: List[np.ndarray]) -> List[np.ndarray]:
+    try:
+        list_imgs_grayed = []
 
-# **Compute Haralick features** (e.g., contrast, correlation, energy, homogeneity) for each texture:
-# - Use `skimage.feature.graycomatrix` and `graycoprops`.
-#   - Compare values in a Pandas DataFrame.
+        for img in list_imgs:
+            list_imgs_grayed.append(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+
+        return list_imgs_grayed
+    except Exception as e:
+        raise RuntimeError(f"Failed to grayscale images. Reason: {e}")
+
+
+def is_grayscaled(img: np.ndarray) -> bool:
+    try:
+        if len(img.shape) < 3:
+            return True
+        elif img.shape[2] == 1:
+            return True
+        else:
+            return False
+    except Exception as e:
+        raise RuntimeError(f"Failed to check if image is grayscaled. Reason: {e}")
+
+
+def haralick_features(grayed_img_list: List[np.ndarray], properties: List[str]) -> pd.DataFrame:
+    try:
+        haralick_features = []
+
+        for index, img in enumerate(grayed_img_list):
+            if is_grayscaled(img):
+                img_uint8 = img.astype(np.uint8)
+
+                glcm = graycomatrix(
+                    img_uint8,
+                    distances=[1],
+                    angles=[0, np.pi/4, np.pi/2, 3*np.pi/4],
+                    levels=256,
+                    symmetric=True,
+                    normed=True
+                )
+
+                haralick_row: Dict[str, Any] = {'image_index': index}
+
+                for prop in properties:
+                    haralick_row[prop] = float(np.mean(graycoprops(glcm, prop)))
+
+                haralick_features.append(haralick_row)
+            else:
+                raise RuntimeError(f"Failed to compute haralick features. Not gray scaled")
+
+        df_haralick_features = pd.DataFrame(haralick_features)
+
+        return df_haralick_features
+    except Exception as e:
+        raise RuntimeError(f"Failed to compute haralick features. Reason: {e}.")
+
 
 # Apply Otsu’s thresholding to segment foreground from background.
+def otsu_thresholding(list_imgs: List[np.ndarray]) -> List[np.ndarray]:
+    try:
+        # _, binary_color = cv2.threshold(gray_color, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        list_otsus = []
+
+        for img in list_imgs:
+            if is_grayscaled(img):
+                img_uint8 = img.astype(np.uint8)
+                _, binary_color = cv2.threshold(img_uint8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                kernel = np.ones((5, 5), np.uint8)
+                closed_binary = cv2.morphologyEx(binary_color, cv2.MORPH_CLOSE, kernel)
+                list_otsus.append(closed_binary)
+            else:
+                raise RuntimeError(f"Failed to apply otsu thresholding on gray scaled images. Not gray scaled")
+
+        return list_otsus
+    except Exception as e:
+        raise RuntimeError(f"Failed to apply otsu thresholding on gray scaled images. Reason: {e}")
+
 
 # Perform the Histogram Equalization technique with CLAHE on Grayscale Image.
+def clahe_grayscale():
+    pass
 
 # Perform Convolution filters on images (Gaussian Blur, Median Blur, Sharpening, Edge Detection)
 
-# Hough Tranform
+def summary_statistics():
+    pass
+
 
 if __name__ == '__main__':
     print("Loading images from local directory...")
@@ -82,5 +169,6 @@ if __name__ == '__main__':
     print(f"Number of images: {len(list_imgs)}")
 
     print("Taking mean pixel value of first image")
-    mean, std = mean_pixel_value(list_imgs[0])
-    print(f"The mean pixel value is: {mean:.2f}")
+    mean, std = avg_mean_std_images(list_imgs)
+    print(f"The avergae mean across images is: {mean:.2f}")
+    print(f"The standard deviation of means across images is: {std:.2f}")
