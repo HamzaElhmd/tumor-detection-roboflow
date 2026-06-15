@@ -219,3 +219,5 @@ __marimo__/
 
 # Data
 brain-Tumor-1/
+kaggle_output/models/      # 45 MB checkpoint — use Git LFS or keep on Kaggle
+.ipynb_checkpoints/
