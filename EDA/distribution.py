@@ -4,8 +4,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from skimage.feature import graycomatrix, graycoprops
+
+import torch
+from torch.utils.data import DataLoader
+
+# --- ImageNet normalization constants (matching preprocess.py) ---
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 if __package__ is None or __package__ == "":
@@ -32,6 +39,111 @@ def load_images_local(directory: Path) -> List[np.ndarray]:
         return img_list
     except Exception as e:
         raise RuntimeError(f"Failed to load images from the local directory {directory}. Reason: {e}")
+
+
+def tensor_batch_to_numpy(
+    images_tensor: torch.Tensor,
+    denormalize: bool = False
+) -> List[np.ndarray]:
+    """Convert a (B, 3, H, W) preprocessed tensor batch to a list of numpy (H, W, C) arrays.
+
+    If denormalize=True, reverse ImageNet normalization so pixel values are in [0, 1]
+    (suitable for cv2-based EDA functions that expect typical image ranges).
+    """
+    imgs = []
+    for i in range(images_tensor.size(0)):
+        img = images_tensor[i].cpu().numpy()           # (3, H, W)
+        img = img.transpose(1, 2, 0)                   # (H, W, 3)
+        if denormalize:
+            img = img * IMAGENET_STD + IMAGENET_MEAN    # back to [0, 1] range
+            img = np.clip(img, 0.0, 1.0)
+        imgs.append(img)
+    return imgs
+
+
+def load_images_from_dataloader(
+    dataloader: DataLoader,
+    max_batches: Optional[int] = None,
+    denormalize: bool = False
+) -> List[np.ndarray]:
+    """Extract all images from a DataLoader into a flat list of numpy (H, W, C) arrays.
+
+    This bridges the preprocessed tensor pipeline with existing cv2-based EDA functions.
+    Set denormalize=True to reverse ImageNet normalization for functions that expect
+    standard pixel ranges (0-1 or 0-255).
+
+    Parameters
+    ----------
+    dataloader : DataLoader
+        PyTorch DataLoader yielding (images, labels) batches.
+    max_batches : int, optional
+        Cap the number of batches processed (useful for large datasets).
+    denormalize : bool
+        If True, reverse ImageNet normalization.
+    """
+    all_images = []
+    for batch_idx, (images, _) in enumerate(dataloader):
+        all_images.extend(tensor_batch_to_numpy(images, denormalize=denormalize))
+        if max_batches is not None and batch_idx + 1 >= max_batches:
+            break
+    return all_images
+
+
+def preprocessed_pixel_statistics(
+    dataloader: DataLoader,
+    max_batches: Optional[int] = None
+) -> Dict[str, Any]:
+    """Compute per-channel pixel statistics on preprocessed (normalized) data.
+
+    Returns min, max, mean, and std per channel. Useful for verifying that
+    normalization produces the expected distributions.
+    """
+    all_images = []
+    for batch_idx, (images, _) in enumerate(dataloader):
+        all_images.append(images)
+        if max_batches is not None and batch_idx + 1 >= max_batches:
+            break
+
+    stacked = torch.cat(all_images, dim=0).cpu()  # (N, 3, H, W)
+    n = stacked.size(0)
+
+    return {
+        'num_images': n,
+        'shape': tuple(stacked.shape),
+        'min_per_channel': tuple(stacked.amin(dim=(0, 2, 3)).tolist()),
+        'max_per_channel': tuple(stacked.amax(dim=(0, 2, 3)).tolist()),
+        'mean_per_channel': tuple(stacked.mean(dim=(0, 2, 3)).tolist()),
+        'std_per_channel': tuple(stacked.std(dim=(0, 2, 3)).tolist()),
+    }
+
+
+def preprocessed_channel_distributions(
+    dataloader: DataLoader,
+    max_batches: Optional[int] = None
+) -> Dict[str, np.ndarray]:
+    """Compute per-channel histograms of preprocessed (normalized) pixel values.
+
+    Returns histograms (counts) and bin edges for each of the 3 channels.
+    Bin range is set wide enough to capture normalized values (~ -3 to +3).
+    """
+    all_images = []
+    for batch_idx, (images, _) in enumerate(dataloader):
+        all_images.append(images)
+        if max_batches is not None and batch_idx + 1 >= max_batches:
+            break
+
+    stacked = torch.cat(all_images, dim=0).cpu()  # (N, 3, H, W)
+    bins = np.linspace(-4, 4, 129)  # 128 bins from -4 to +4
+    hists = {}
+    channel_names = ['R', 'G', 'B']
+
+    for c in range(3):
+        channel_data = stacked[:, c, :, :].flatten().numpy()
+        hist, _ = np.histogram(channel_data, bins=bins)
+        hists[channel_names[c]] = hist.astype(np.float64)
+
+    hists['bins'] = bins
+    return hists
 
 
 def detect_corrupted_images(directory: Path) -> List[str]:
