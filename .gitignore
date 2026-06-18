@@ -217,5 +217,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Data
 brain-Tumor-1/
 models.zip
+# large checkpoints (45 MB+) - keep on Kaggle / Git LFS, do not commit
+kaggle_output/models/
+# gathered model checkpoints - attach on Kaggle instead of committing
+comparison_checkpoints/
+.ipynb_checkpoints/
